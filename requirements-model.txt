@@ -1,0 +1,8 @@
+# Only scripts/leakage_probe.py needs this. Install it on top of requirements.txt.
+#
+#     pip install -r requirements.txt -r requirements-model.txt
+#
+# Pinned rather than ranged. The probe publishes two AUCs and their difference is the
+# whole point, so the solver and the scaler are part of what is being measured. A minor
+# bump that changed a default would move a published number with nothing to say it had.
+scikit-learn==1.7.2
