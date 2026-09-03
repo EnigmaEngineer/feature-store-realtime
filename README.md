@@ -144,11 +144,27 @@ exactly on the end of the horizon, a uniform draw landing exactly on the thinnin
 threshold, and an account rate landing exactly on the skip cutoff. All three have measure
 zero on a continuous draw and none is a rule anybody can get wrong.
 
-The pass found five things worth having. Two unit conversions that no check reached. A
-`sort_keys` flag whose removal would silently move every fingerprint the first time
-somebody reorders a dict literal. A median helper feeding two published figures that
-nothing pinned. And the default arguments that build the published corpus, which every
-check had been bypassing by passing explicit values.
+What the pass found, in the order it found it.
+
+An `__eq__` on the window type that nothing called and nothing needed. Defining it without
+a `__hash__` had quietly made windows unhashable, so deleting it was a repair rather than a
+tidy up.
+
+Two of the four unit conversions. Every fixture builds its windows from the same table it
+is checked against, so an hour could have been 3,601 seconds and the whole suite stayed
+green.
+
+A `sort_keys` flag. Turning it off changes nothing today, because both sides of every
+comparison are built by the same code, and it would silently move every fingerprint the
+first time somebody reordered a dict literal.
+
+The median helper behind two published figures, and the transaction counter beside it.
+Both were only ever read through an inequality.
+
+The zero fallbacks for an empty corpus, which nothing had ever handed an empty corpus.
+
+And the default arguments. Every check passes explicit values to stay fast, so the seed and
+the horizon that build the published corpus were the one thing in the file nothing touched.
 
 ## Known limitations
 
