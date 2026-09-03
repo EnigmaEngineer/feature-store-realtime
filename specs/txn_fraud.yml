@@ -1,0 +1,74 @@
+feature_set: txn_fraud
+description: >
+  Account level features for scoring a card transaction as it arrives. Every window is
+  trailing and every one excludes the transaction being scored, because at serving time
+  that row does not exist yet.
+
+entity: account_id
+event_time: event_ts
+label: is_fraud
+source: transactions
+
+features:
+  - name: txn_count_1h
+    description: how busy this card has been in the last hour
+    dtype: int
+    aggregate: count
+    window:
+      length: 1h
+      closed: left
+      align: event_time
+
+  - name: txn_count_24h
+    dtype: int
+    aggregate: count
+    window:
+      length: 24h
+      closed: left
+      align: event_time
+
+  - name: amount_sum_1h
+    dtype: float
+    aggregate: sum
+    column: amount
+    window:
+      length: 1h
+      closed: left
+      align: event_time
+
+  - name: amount_max_24h
+    dtype: float
+    aggregate: max
+    column: amount
+    window:
+      length: 24h
+      closed: left
+      align: event_time
+
+  - name: amount_mean_7d
+    description: the account's own baseline, so a burst has something to be large against
+    dtype: float
+    aggregate: mean
+    column: amount
+    window:
+      length: 7d
+      closed: left
+      align: event_time
+
+  - name: distinct_merchants_1h
+    dtype: int
+    aggregate: distinct_count
+    column: merchant_id
+    window:
+      length: 1h
+      closed: left
+      align: event_time
+
+  - name: distinct_merchants_7d
+    dtype: int
+    aggregate: distinct_count
+    column: merchant_id
+    window:
+      length: 7d
+      closed: left
+      align: event_time

@@ -1,0 +1,10 @@
+# Everything the library and the whole test suite need. A clone can run
+# `python tests/run_all.py` with only this file installed.
+#
+# PyYAML because a feature spec is YAML. It is YAML rather than JSON so a comment can sit
+# next to the field it explains, and a spec is a document people argue over in review.
+PyYAML==6.0.3
+
+# scikit-learn is deliberately NOT here. Only scripts/leakage_probe.py imports it and no
+# check does, so putting it in this file would make a clone install a numpy and a scipy
+# it does not need to run anything. requirements-model.txt has it.
