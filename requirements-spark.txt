@@ -1,0 +1,9 @@
+# Only scripts/materialize.py and scripts/oracle_check.py need this. The suite does not,
+# because featurestore/spark_job.py imports pyspark inside the functions that build
+# Spark objects, so the plan and the frame arithmetic are readable without a JVM.
+#
+# 3.5.x rather than 4.x. pyspark 4 wants Java 17 and the machine this was measured on
+# has Java 11. There is no wheel on PyPI for this, only a 317 MB source archive, so a
+# plain pip install is slow. Unpacking the archive and putting it on PYTHONPATH is the
+# faster path and needs no build step.
+pyspark==3.5.6
