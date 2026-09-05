@@ -4,50 +4,20 @@
 
 Plain functions named check_* rather than a framework. Nothing here needs a corpus on
 disk or a Redis server, so a clone runs the whole suite with only requirements.txt.
+
+That is also the limit of what this runner can grade. Anything inside a pyspark call is
+invisible to it, and `tests/run_with_spark.py` is the runner that reaches those.
 """
 
-import importlib
 import os
 import sys
-import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
 
-
-def modules():
-    for name in sorted(os.listdir(HERE)):
-        if name.startswith("test_") and name.endswith(".py"):
-            yield "tests." + name[:-3]
-
-
-def main():
-    passed = 0
-    failed = []
-    for modname in modules():
-        mod = importlib.import_module(modname)
-        for attr in sorted(dir(mod)):
-            if not attr.startswith("check_"):
-                continue
-            try:
-                getattr(mod, attr)()
-                passed += 1
-            except Exception:
-                failed.append((modname, attr, traceback.format_exc()))
-
-    for modname, attr, tb in failed:
-        print("FAIL {}.{}".format(modname, attr))
-        print(tb)
-
-    print("{} passed, {} failed".format(passed, len(failed)))
-    if passed == 0:
-        # A run that executed nothing is not a pass. This is why the count is printed
-        # rather than a bare word.
-        print("no checks were collected, that is a failure")
-        return 2
-    return 1 if failed else 0
+from runner import run_checks  # noqa: E402  (tests/ is on the path by the line above)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_checks())
