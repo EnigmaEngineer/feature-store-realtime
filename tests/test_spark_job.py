@@ -1,8 +1,8 @@
 """Checks on the parts of the Spark job that decide anything.
 
 The plan, the column list, the damage catalogue and the event time guard all run without
-a session, which is why they live in `featurestore/spark_job.py` above the pyspark
-import rather than inside it. The job running end to end is `scripts/oracle_check.py`,
+a session. That is why they live in `featurestore/spark_job.py` above the pyspark import
+rather than inside it. The job running end to end is `scripts/oracle_check.py`,
 because that needs a corpus and a JVM and neither belongs in a suite a clone runs.
 """
 
