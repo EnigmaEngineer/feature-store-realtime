@@ -1,0 +1,17 @@
+# Only scripts/store_check.py and tests/run_with_redis.py need this. Install it on top
+# of requirements.txt.
+#
+#     pip install -r requirements.txt -r requirements-online.txt
+#
+# featurestore/online.py imports neither of these. It takes a client and calls two
+# methods on it, so the encoding, the key and the refusals are readable and checkable on
+# a clone that installed only requirements.txt.
+#
+# redislite ships a prebuilt redis-server and starts it on a TCP port from inside the
+# process that wants it. That is here because the machine this was measured on has no
+# Docker and no root, and a backgrounded server does not survive the shell call that
+# started it. It is a real Redis 6.2 and not a stand in, which is the reason to prefer it
+# over an in memory imitation. It is a test and probe dependency and it has no business
+# in a deployment.
+redis==8.1.0
+redislite==6.2.912183

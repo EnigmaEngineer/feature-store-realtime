@@ -19,7 +19,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 BASE = "requirements.txt"
-REQUIREMENTS = [BASE, "requirements-model.txt", "requirements-spark.txt"]
+REQUIREMENTS = [
+    BASE,
+    "requirements-model.txt",
+    "requirements-online.txt",
+    "requirements-spark.txt",
+]
 
 # distribution name on the left, the name you actually import on the right
 PROVIDES = {
