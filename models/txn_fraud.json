@@ -1,0 +1,32 @@
+{
+  "coefficients": {
+    "amount_max_24h": 0.00727268356273525,
+    "amount_mean_7d": -0.023918632623741554,
+    "amount_sum_1h": 0.02591793752694242,
+    "distinct_merchants_1h": 7.78569474144476,
+    "distinct_merchants_7d": 0.17026304775012113,
+    "txn_count_1h": -6.970455114032356,
+    "txn_count_24h": -0.304875544623147
+  },
+  "feature_names": [
+    "txn_count_1h",
+    "txn_count_24h",
+    "amount_sum_1h",
+    "amount_max_24h",
+    "amount_mean_7d",
+    "distinct_merchants_1h",
+    "distinct_merchants_7d"
+  ],
+  "fingerprint": "534217a2fc6a",
+  "intercept": -1.362492062964391,
+  "threshold": 0.5,
+  "trained": {
+    "corpus": "transactions.csv",
+    "rows": 489972,
+    "split_at": 1753627753,
+    "test_auc": 0.9226,
+    "test_rows": 146992,
+    "train_auc": 0.9216,
+    "train_rows": 342980
+  }
+}
