@@ -53,6 +53,11 @@ because this machine has all of them installed and would never notice it breakin
         |                              |                    no web framework in it
         |                              |
         |                              +--> featurestore/api.py     the fastapi edge
+        |                              |         |
+        |                              |         +--> scripts/load_probe.py  many at once
+        |                              |                    |
+        |                              |         featurestore/load.py  what a pass is
+        |                              |                               allowed to claim
         |                              +--> scripts/serve_probe.py  grades what it serves
         |
         +--> payload schema             what a request must carry
@@ -485,13 +490,104 @@ distinct count cannot raise it. The mean is the exception and it moved upward 1,
 since dropping a below average transaction pushes a mean up. A streaming writer fed by
 arrivals fixes the larger half of this and not all of it.
 
+### The worker thread costs a third of the throughput and is still the right default
+
+Every latency figure above this line came off `fastapi.testclient`, which sends one request
+at a time and never opens a socket. `scripts/load_probe.py` drives a real uvicorn over real
+connections instead, and the first thing it can see is the one decision the HTTP edge makes.
+`featurestore/api.py` runs the blocking work on a worker thread. The comment saying why had
+never been measured, because a serial harness cannot tell the two arrangements apart.
+
+Six paired rounds per arm per level. Arms rotated so none is always first. A warmup pass
+discarded and the driver's own control checked on every pass. All 96 passes kept their load
+up. The comparison is a sign test over the paired rounds, and six is the smallest number of
+rounds that can reach a p below 0.05, so the probe refuses five.
+
+```
+python scripts/load_probe.py --accounts 0 --workers 1,8 --requests 800 --rounds 6
+python scripts/load_probe.py --accounts 0 --workers 32,64 --requests 800 --rounds 6
+
+  medians over six rounds
+
+  clients   offload rps   inline rps   offload p99   inline p99   throughput   p99      p
+        1           827         1055          2.02         1.66       0.78x  1.21x  0.0312
+        8           792         1094         16.42         9.58       0.72x  1.71x  0.0312
+       32           858         1168         98.51        30.83       0.73x  3.20x  0.0312
+       64           961         1332        126.87        53.24       0.72x  2.38x  0.0312
+```
+
+The worker thread lost every round at every level. So the first reading was that the change
+should be reverted, and that reading is wrong.
+
+It is a result about the store rather than about the arrangement. Redis here is redislite
+over loopback, so there is almost nothing for a worker thread to overlap and the dispatch is
+pure cost. Putting a wait in front of the store finds where it flips.
+
+```
+python scripts/load_probe.py --accounts 0 --workers 32 --requests 320 --rounds 6 \
+    --warmup 60 --store-delay-ms 0,0.5,1,2
+
+  32 clients, six rounds each, a sleep in front of the store
+
+  store delay   offload rps   inline rps   ratio   rounds won        p
+       0.0 ms           964         1383   0.70x       0 of 6   0.0312
+       0.1 ms           921         1290   0.71x       0 of 6   0.0312
+       0.2 ms          1036         1129   0.92x       0 of 6   0.0312
+       0.3 ms           966         1009   0.96x       3 of 6   1.0000
+       0.4 ms          1045          911   1.15x       4 of 6   0.6875
+       0.5 ms          1041          847   1.23x       6 of 6   0.0312
+       1.0 ms          1065          578   1.84x       6 of 6   0.0312
+       2.0 ms           902          354   2.55x       6 of 6   0.0312
+```
+
+The crossover sits between 0.2 and 0.5 ms, and this store answers in about 0.12 ms with a
+lookup p99 near 0.29 ms. So the deployment being measured sits on the crossover rather than
+safely to one side of it.
+
+The two costs are not symmetric. Below the crossover the thread costs about 28 percent of
+throughput and stops there. Above it the loop arrangement loses without bound, because every
+request in flight waits behind the one holding the loop. Half a millisecond of round trip is
+any Redis that is not on this machine. `offload` therefore stays on by default, and
+`docs/adr-0006` is the argument.
+
+### What a perfect cache would be worth, which is why there is not one
+
+The day's line says caching where it earns its place. What that needs first is a ceiling.
+
+The cached arms replace Redis with a dict holding every key, read out of the real store so
+both sides decode identical bytes. That is not a proposal. A perfect cache is a dict with
+everything already in it. No eviction and no round trip and no invalidation. Nothing real
+can beat it.
+
+```
+  from the same two runs as the arrangement table above
+
+  throughput, cache against no cache inside the same arrangement
+
+  clients   on inline   on offload
+        1       1.32x        1.25x
+        8       1.26x        1.35x
+       32       1.24x        1.27x
+       64       1.21x        1.24x
+```
+
+Twenty one to thirty two percent, as a best case. No cache is built, and the reason that
+decides it is not the size of the number. The store is loaded once and never refreshed, and
+the section above measures what that already costs. A cache in front of it adds a second
+unbounded age with no invalidation path, on a service whose age policy ships as `None`
+precisely because the first layer's staleness could not be bounded usefully. The p99 budget
+is 150 ms and the shipped arrangement is at 126.87 ms at sixty four clients, which is the
+only number here under any pressure, and the cache is worth 1.24x of throughput there while
+the arrangement question is worth 2.38x of p99. The smaller lever, on the axis that is not
+binding, bought with an error already measured.
+
 ## Verification
 
 ```
-python tests/run_all.py                          163 passed, 0 failed
-python tests/run_with_spark.py                   163 passed, 0 failed, spark arm agrees
-python tests/run_with_redis.py                   163 passed, 0 failed, store arm agrees
-python tests/run_with_api.py                     163 passed, 0 failed, api arm agrees
+python tests/run_all.py                          206 passed, 0 failed
+python tests/run_with_spark.py                   206 passed, 0 failed, spark arm agrees
+python tests/run_with_redis.py                   206 passed, 0 failed, store arm agrees
+python tests/run_with_api.py                     206 passed, 0 failed, api arm agrees
 ```
 
 Four runners because three of them reach something the first cannot. `tests/run_all.py`
@@ -500,8 +596,15 @@ install small. The cost is that no check under `tests/` executes a line inside a
 call, opens a socket or starts a web framework. `tests/run_with_spark.py` runs the
 same checks and then the real job against the reference. `tests/run_with_redis.py` runs
 them and then the loader and the lookup against a real server. `tests/run_with_api.py` runs
-them and then the real FastAPI app over a real Redis. All three fail rather than skip when
-their dependency is missing.
+them and then the real FastAPI app over a real Redis, in both of the arrangements
+`scripts/load_probe.py` compares, asserting they return the same body before anything times
+them. All three fail rather than skip when their dependency is missing.
+
+No runner starts a socket. `tests/run_with_api.py` drives the app through `TestClient`,
+which is in process. The only thing here that binds a port and runs an event loop is
+`scripts/load_probe.py`, and it is a script rather than a fifth runner because what it
+produces is a measurement rather than a pass or a fail. What is checkable in it lives in
+`featurestore/load.py` and is graded by the first runner.
 
 Every one of those counts was produced by running the command. A runner's number is a
 property of the runner and cannot be reasoned about from the module the last change
@@ -530,9 +633,36 @@ featurestore/service.py    27 of 28 run_all.py
 featurestore/model.py      18 of 20 run_all.py
 featurestore/generate.py   60 of 63 run_all.py
 featurestore/frames.py     17 of 30 run_all.py
+featurestore/load.py       53 of 67 run_all.py
 featurestore/spark_job.py  11 of 29 run_all.py
 featurestore/spark_job.py  24 of 29 run_with_spark.py
 ```
+
+The pass over `load.py` started at 47 of 67 and moved to 53 by fixing what it named. Two of
+those were the module rather than the checks. A clamp on the quantile index could never
+bind, because for any q below one the index is already inside the list, so a mutant widening
+it changed nothing. A guard on a zero wall clock in `summarise` was unreachable for the same
+kind of reason, since the function that raises on it runs one line earlier. Both were
+deleted rather than tested.
+
+Three were fixtures that agreed with a mutant by coincidence. A wall clock of exactly one
+second makes dividing by it and multiplying by it the same operation. Nothing sat on the
+inclusive edge of the driver floor. Nothing carried a single request, and a guard against an
+arm of no requests had been written as `n <= 0` where `n <= 1` passed everything.
+
+One was a real defect and it is the one worth reading. `all_ok` is the control saying an arm
+served nothing but scores. An arm of zero requests has a status map of `{200: 0}`, which
+matched the expected set and matched its own count, so a pass that served nothing at all
+cleared the control that exists to say whether it served the right thing. That is the same
+shape as a checker reporting clean because it was pointed at no files.
+
+The fourteen survivors are four unreachable guards and ten equivalent mutants. The guards
+are the zero denominator checks in `compare`. They cannot be reached, because an arm with a
+throughput of zero fails the status control first, and a check asserts that rather than
+pretending a fixture reaches the branch. The equivalents are four things. Guards whose
+result is already clamped by a `min(1.0, ...)`. A binomial term that is zero by definition.
+Comparisons on ties that were filtered out one line above. And boundaries at 0.05 which the
+p values cannot land on, because they are all of the form `2k / 2**n`.
 
 The pass over the serving path found four holes and they were one mistake in four places.
 Every check compared a status against `service.OK` rather than against 200, so renumbering
@@ -686,9 +816,17 @@ position as `scripts/oracle_check.py` and it is a gap in both.
 The lookup is one `HGETALL` per entity. A request scoring several entities would pay a
 round trip each, and nothing here batches reads or pipelines them.
 
-The latency figures are a single process on loopback driving the app through a test client.
-There is no network, no other tenant and no concurrency. Load testing is what turns that
-into a serving number and it is not done.
+The latency figures in the sections above the load one are a single process on loopback
+driving the app through a test client, with no concurrency in them. They are a floor. The
+load sections replace the concurrency half of that and not the rest. It is still one
+process on one machine with one uvicorn worker and no network. One process is one GIL on a
+workload that is mostly Python. The first thing to try for throughput here is a second
+worker process and nothing has measured that.
+
+The delay sweep that puts the crossover between 0.2 and 0.5 ms is a model of a slower store
+rather than a measurement of one. It is `time.sleep` in front of `hgetall`, which releases
+the GIL the way a socket wait does and is otherwise nothing like a network. The bracket is
+worth more than the midpoint of it.
 
 The model artefact is committed and the corpus it was fitted on is gitignored. The corpus
 regenerates byte identically from one command and the fit is one more, so it is
