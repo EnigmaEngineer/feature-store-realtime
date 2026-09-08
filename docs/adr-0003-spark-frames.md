@@ -37,9 +37,9 @@ A Spark RANGE frame is two constants. A window in this spec is not always that, 
 probes say so without anybody reasoning about it.
 
 `align: event_time` gives one frame at every probe. `align: calendar_day` gives six
-different frames across six probes, from `(-172799, -86400)` to `(-86400, -1)`, because
-the anchor is midnight and the distance from the scoring event to midnight is whatever
-time of day it is. So `frame_offsets` refuses that window and says why.
+different frames across six probes, from `(-172799, -86400)` to `(-86400, -1)`. The anchor
+is midnight and the distance from the scoring event to midnight is whatever time of day it
+is. So `frame_offsets` refuses that window and says why.
 
 Half the spec's legal alignments cannot be a window frame at all. Nothing about reading
 the Spark documentation would have told me that. The probe did.
