@@ -34,7 +34,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from featurestore import api, compute, service
+from featurestore import api, compute, load, service
 from featurestore import corpus as corpus_io
 from featurestore import model as model_mod
 from featurestore import online, spec
@@ -63,16 +63,10 @@ def label_for(max_age_s):
     return "{}h".format(max_age_s // HOUR)
 
 
-def quantiles(values):
-    ordered = sorted(values)
-
-    def at(q):
-        if not ordered:
-            return 0.0
-        idx = min(len(ordered) - 1, int(q * len(ordered)))
-        return ordered[idx]
-
-    return at(0.50), at(0.95), at(0.99), ordered[-1] if ordered else 0.0
+# One definition of a quantile, in the package. It lived here until `scripts/load_probe.py`
+# also needed a p99, and two modules reporting one off two definitions is a disagreement
+# neither half looks wrong on its own.
+quantiles = load.quantiles
 
 
 def truth_scores(log, feature_set, model, requests):
