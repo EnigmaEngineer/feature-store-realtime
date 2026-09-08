@@ -5,21 +5,23 @@ the service that answers a request. This is the definition layer, the reference
 implementation both of those get checked against, and the distributed job that is the
 first thing to be checked against it.
 
-There are now three readers of the same spec and a comparison for each. The Spark job
+There are now four readers of the same spec and a comparison for each. The Spark job
 reproduces the reference on 3,429,804 cells with nothing differing. The online store round
-trips 28,000 cells through a real Redis with nothing differing. The service is not built,
-so the training and serving claim is most of the way to evidenced.
+trips 28,000 cells through a real Redis with nothing differing. The service scores from the
+store and is graded against the same reference through a real HTTP stack.
 
     pip install -r requirements.txt
     python tests/run_all.py
 
-The suite needs nothing beyond that file. `requirements-spark.txt` is for the batch job,
-`requirements-online.txt` is for the store, and `requirements-model.txt` is for the leakage
-probe. `featurestore/spark_job.py` imports pyspark inside the functions that build Spark
-objects so the frame arithmetic stays readable without a JVM, and `featurestore/online.py`
-imports no client at all and takes one as an argument. A check asserts that arrangement
-rather than trusting it, because this machine has both installed and would never notice it
-breaking.
+The suite needs nothing beyond that file. There is one optional file per heavy thing. The
+batch job takes `requirements-spark.txt` and the store takes `requirements-online.txt`. The
+HTTP edge takes `requirements-service.txt` and fitting takes `requirements-model.txt`.
+`featurestore/spark_job.py` imports pyspark
+inside the functions that build Spark objects and `featurestore/api.py` imports fastapi
+inside the one that builds the app, so the frame arithmetic and the serving rules stay
+readable without a JVM or a web framework. `featurestore/online.py` imports no client at
+all and takes one as an argument. Checks assert that arrangement rather than trusting it,
+because this machine has all of them installed and would never notice it breaking.
 
 ## What is here
 
@@ -46,11 +48,21 @@ breaking.
         |                    |
         |                    +--> scripts/store_check.py      grades the round trip
         |                    +--> scripts/staleness_probe.py  grades it against the clock
+        |                    |
+        |                    +--> featurestore/service.py   validate, fetch, score, log
+        |                              |                    no web framework in it
+        |                              |
+        |                              +--> featurestore/api.py     the fastapi edge
+        |                              +--> scripts/serve_probe.py  grades what it serves
         |
         +--> payload schema             what a request must carry
+                  ^
+                  |
+        featurestore/model.py           coefficients, keyed to the same fingerprint
 ```
 
-The service is not built yet.
+`scripts/train_model.py` fits the model and writes `models/txn_fraud.json`. Nothing on the
+serving path imports scikit-learn, because the arithmetic is a dot product and a logistic.
 
 ## The spec
 
@@ -343,21 +355,157 @@ would still be written as zeros. The comparison was `>` when it was first writte
 mutation pass is what asked, because no fixture had put an entity's first event on the
 boundary.
 
+### The service, and the model it serves
+
+The scorer is a logistic regression held as a coefficient per feature and an intercept.
+`scripts/train_model.py` fits it with scikit-learn and writes the JSON. Nothing on the
+serving path imports scikit-learn, so a latency number is a statement about the feature
+fetch rather than about somebody's inference runtime. `docs/adr-0001` argues that choice.
+
+```
+python scripts/train_model.py --accounts 0 --out models/txn_fraud.json
+  489972 rows over 4000 accounts, spec txn_fraud at 534217a2fc6a
+  split at 1753627753, 342980 training rows and 146992 test rows
+  273 fraud in training, 129 in test
+  train AUC 0.9216
+  test AUC  0.9226
+  largest disagreement with scikit-learn over 489972 rows: 1.998e-15
+```
+
+That last line is the reason the script exists. scikit-learn scores through numpy and the
+service scores through `math.exp`, so they are two implementations of one function, and
+this repo has been caught more than once by two implementations that were each correct and
+disagreed. The fit is not written out until every training row has gone through both.
+
+The 0.9226 is not the 0.9226 in the leakage probe above, and that is worth saying because
+they round the same. The probe standardises its inputs and this does not, so the fitted
+coefficients are entirely different. The two test AUCs are 0.922574 and 0.922591, which is
+339 reordered pairs out of 18,945,327. Not standardising is deliberate. A scaler is a
+second artefact between training and serving, and the point of a linear model here is that
+a feature arriving with the wrong scale moves the log odds by the coefficient times the
+difference and nothing else.
+
+The service is `featurestore/service.py` and it imports no web framework.
+`featurestore/api.py` is the FastAPI edge and makes no decisions. Validation lives in the
+first file and so does what a miss means. So does what an age means and so does the shape of
+the log record. That is why every one of them is reachable from a suite that installs one
+requirements file.
+
+```
+python scripts/serve_probe.py --accounts 0
+  3000 requests through the app, statuses {200: 3000}
+                                  p50      p95      p99      max
+  through the app, ms           1.698    2.168    2.486    3.564
+  inside the service, ms        0.250    0.381    0.486
+  the edge is 5.1x the service on the p99
+```
+
+Four runs put the p99 through the app between 2.362 and 3.368 ms and the service half
+between 0.467 and 0.623, so the ratio ran 4.9 to 5.5 and none of these is worth a third
+decimal. The budget for this project is 150 ms. The store alone was measured at a p99 of
+0.286 ms with no HTTP in it, so the framework and the socket are most of what a request
+costs and the whole thing is still about fifty times inside budget. This is a single
+process on loopback with no network, so it is a floor and not a serving number.
+
+### An age threshold refuses far more than it saves
+
+A decision flip is a request where the stored vector and its own point in time vector land
+on opposite sides of the model threshold. It is the only error measure here with a
+consequence attached.
+
+```
+python scripts/serve_probe.py --accounts 0
+  max age        refused   share   served   flips    rate       95% interval refused rate
+  no threshold         0   0.000    48998    3848  0.0785   0.0762 to 0.0810          n/a
+  1h               48539   0.991      459      17  0.0370   0.0217 to 0.0586       0.0789
+  6h               45803   0.935     3195     258  0.0808   0.0715 to 0.0907       0.0784
+  1d               40756   0.832     8242     605  0.0734   0.0679 to 0.0792       0.0796
+```
+
+The last column is the flip rate among the requests each threshold threw away. At six hours
+the service refuses 93.5 percent of its traffic and keeps requests failing at 0.0808 against
+0.0784 for the ones it discarded. At a day it refuses 83.2 percent and the interval on what
+it keeps covers the number it started from.
+
+A flip is defined by the model threshold, which ships at 0.5 as a default nobody chose, so
+the same sweep runs at four others.
+
+```
+  threshold           all   1h served   6h served   1d served
+  0.10             0.2362      0.0763      0.1468      0.1924
+  0.25             0.2673      0.0959      0.2081      0.2338
+  0.50             0.0785      0.0370      0.0808      0.0734
+  0.75             0.0238      0.0131      0.0232      0.0228
+  0.90             0.0092      0.0065      0.0075      0.0091
+```
+
+The level moves by a factor of 29, so 0.0785 is a fact about staleness at a threshold of
+0.5 rather than a fact about staleness. What holds across the range is the exchange rate.
+At 0.25, the friendliest row a threshold gets, six hours refuses 93.5 percent of traffic to
+remove 22 percent of the flips.
+
+So `max_age_s` ships as None. The service attaches the age to every scored response and
+does not judge it. `docs/adr-0005` is the argument and the intervals are Clopper Pearson,
+because 17 of 459 printed as 0.0370 next to 0.0785 invites a reader to treat a gap as
+settled that the count does not license.
+
+### A feature goes stale while nothing happens
+
+Age is standing in for whether anything arrived. Splitting the same requests on that
+directly beats every threshold on both axes at once.
+
+```
+  requests split on new arrivals      requests   flips    rate       95% interval
+  nothing arrived since the load          3933     112  0.0285   0.0235 to 0.0342
+  something arrived since the load       45065    3736  0.0829   0.0804 to 0.0855
+```
+
+Those intervals do not overlap, and the quiet set is 8.6 times the size of what the one
+hour threshold serves at a lower flip rate. Then the quiet side turns out not to be clean
+either.
+
+```
+  of the 3933 quiet requests the stored vector had already moved on 2685 (0.6827)
+  feature                       moved   moved upward
+  txn_count_1h                    364              0
+  txn_count_24h                  1749              0
+  amount_sum_1h                   364              0
+  amount_max_24h                 1309              0
+  amount_mean_7d                 1969           1103
+  distinct_merchants_1h           363              0
+  distinct_merchants_7d           631              0
+```
+
+More than two thirds of the vectors for entities where nothing happened were already wrong.
+Every window is trailing, so it sheds rows off its back edge as the clock moves. A count of
+the last hour falls as the hour it counted recedes, with nobody transacting.
+
+Six of the seven can only fall, because removing rows from a count or a sum or a max or a
+distinct count cannot raise it. The mean is the exception and it moved upward 1,103 times,
+since dropping a below average transaction pushes a mean up. A streaming writer fed by
+arrivals fixes the larger half of this and not all of it.
+
 ## Verification
 
 ```
-python tests/run_all.py                          108 passed, 0 failed
-python tests/run_with_spark.py                   108 passed, 0 failed, spark arm agrees
-python tests/run_with_redis.py                   108 passed, 0 failed, store arm agrees
+python tests/run_all.py                          163 passed, 0 failed
+python tests/run_with_spark.py                   163 passed, 0 failed, spark arm agrees
+python tests/run_with_redis.py                   163 passed, 0 failed, store arm agrees
+python tests/run_with_api.py                     163 passed, 0 failed, api arm agrees
 ```
 
-Three runners because two of them reach something the first cannot. `tests/run_all.py`
+Four runners because three of them reach something the first cannot. `tests/run_all.py`
 runs on a clone that installed only `requirements.txt`, which is what keeps the base
-install small, and the cost is that no check under `tests/` executes a line inside a
-pyspark call or opens a socket. `tests/run_with_spark.py` runs the same checks and then
-the real job against the reference. `tests/run_with_redis.py` runs them and then the
-loader and the lookup against a real server. Both fail rather than skip when their
-dependency is missing.
+install small. The cost is that no check under `tests/` executes a line inside a pyspark
+call, opens a socket or starts a web framework. `tests/run_with_spark.py` runs the
+same checks and then the real job against the reference. `tests/run_with_redis.py` runs
+them and then the loader and the lookup against a real server. `tests/run_with_api.py` runs
+them and then the real FastAPI app over a real Redis. All three fail rather than skip when
+their dependency is missing.
+
+Every one of those counts was produced by running the command. A runner's number is a
+property of the runner and cannot be reasoned about from the module the last change
+touched, which is a mistake this repo has already made once.
 
 That second runner exists because a mutation score was being quoted for
 `featurestore/spark_job.py` that nothing in the repo could produce. Any harness that
@@ -378,11 +526,32 @@ featurestore/spec.py       29 of 29 run_all.py
 featurestore/compute.py    20 of 20 run_all.py
 featurestore/corpus.py      2 of 2  run_all.py
 featurestore/online.py     31 of 31 run_all.py
+featurestore/service.py    27 of 28 run_all.py
+featurestore/model.py      18 of 20 run_all.py
 featurestore/generate.py   60 of 63 run_all.py
 featurestore/frames.py     17 of 30 run_all.py
 featurestore/spark_job.py  11 of 29 run_all.py
 featurestore/spark_job.py  24 of 29 run_with_spark.py
 ```
+
+The pass over the serving path found four holes and they were one mistake in four places.
+Every check compared a status against `service.OK` rather than against 200, so renumbering
+the constant moved both sides of the comparison and the whole suite stayed green on a
+service answering 201. A status code is a fact about HTTP and not a value this repo gets to
+choose, so the literals are asserted once. The same shape sat under `max_age_s <= 0` and
+`event_ts <= 0`, where the fixtures had the refusing side and nothing said a threshold of
+one second or an epoch second of 1 is legal.
+
+The fifth was the decision boundary. No fixture put a score exactly on the model threshold,
+so `>=` and `>` were the same code. The threshold in that check is built from the score
+rather than chosen, because a logistic will not land on a round number.
+
+The three survivors are a rounding place in a log field and two ways of writing the same
+JSON. The scorer's overflow branch was a fourth until it was measured. Moving its pivot
+from 0 to 1 looks equivalent, both forms being algebraically identical, and it changes the
+served score in the last bit on 4,738 of 489,972 corpus rows. The check that had been
+passing used a tolerance of 1e-15, which is the whole lesson. Making the pivot strict
+instead really is equivalent and that one moved 0 rows of 489,972.
 
 `online.py` has one row and not two, because it imports no client and the suite already
 reaches every line of it. The third runner is not there to raise a mutation score. It is
@@ -516,6 +685,28 @@ position as `scripts/oracle_check.py` and it is a gap in both.
 
 The lookup is one `HGETALL` per entity. A request scoring several entities would pay a
 round trip each, and nothing here batches reads or pipelines them.
+
+The latency figures are a single process on loopback driving the app through a test client.
+There is no network, no other tenant and no concurrency. Load testing is what turns that
+into a serving number and it is not done.
+
+The model artefact is committed and the corpus it was fitted on is gitignored. The corpus
+regenerates byte identically from one command and the fit is one more, so it is
+reproducible rather than merely asserted, and a check refuses to pass if the committed
+artefact and the shipped spec disagree about the fingerprint. What no check covers is
+somebody refitting on a different corpus and committing that.
+
+`class_weight="balanced"` is doing a lot of work at a fraud rate of 0.00082. It was chosen
+because an unweighted fit predicts the majority class everywhere, and nothing here compares
+it against the alternatives or against a threshold tuned on a holdout. The model threshold
+ships at 0.5, which is a default and not a decision.
+
+The flip rate is measured against a model trained on this corpus, so 0.0785 is a number
+about this generator. What survives the corpus being synthetic is the shape of the finding
+rather than the level.
+
+There is no authentication, no rate limit and no request size cap on the service. It is a
+scoring path and not a deployment.
 
 ## What I would do differently
 
