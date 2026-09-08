@@ -23,6 +23,7 @@ REQUIREMENTS = [
     BASE,
     "requirements-model.txt",
     "requirements-online.txt",
+    "requirements-service.txt",
     "requirements-spark.txt",
 ]
 
@@ -220,20 +221,115 @@ def check_the_suite_itself_needs_only_the_base_file():
         )
 
 
-def check_pyspark_is_never_imported_at_module_level_in_the_library():
+def optional_import_names():
+    """Every import name that comes from a requirements file other than the base one.
+
+    Derived from the files rather than listed. The version this replaced named pyspark,
+    so it said nothing when fastapi arrived and the library gained a second module with a
+    heavy dependency in it. A check whose subject is a hand written list only ever covers
+    what its author remembered.
+    """
+    all_declared = declared()
+    names = set()
+    for name in REQUIREMENTS:
+        if name == BASE:
+            continue
+        for package in all_declared[name]:
+            names.update(PROVIDES.get(package, [package]))
+    return names
+
+
+def check_no_optional_package_is_imported_at_module_level_in_the_library():
     """The arrangement that makes the split work, asserted rather than assumed.
 
-    `featurestore/spark_job.py` names pyspark and stays importable without it. Moving
-    either import to the top of that file breaks a clone that installed only the base
-    requirements, and every check in this repo would still pass here because this
-    sandbox has pyspark installed.
+    `featurestore/spark_job.py` names pyspark and `featurestore/api.py` names fastapi, and
+    both stay importable without them. Moving either import to the top of its file breaks
+    a clone that installed only the base requirements, and every check in this repo would
+    still pass here, because this machine has both installed and would never notice.
+
+    Two of the optional packages are only ever named by a script or a runner rather than
+    by the library, so this iterates what it finds instead of demanding a subject per
+    package. `check_no_optional_package_is_unused` is what refuses one nothing imports.
     """
-    deferred = imported().get("pyspark", set())
-    assert deferred, "pyspark is not imported anywhere, this check has no subject"
-    at_module_level = imported(module_level_only=True).get("pyspark", set())
-    assert not at_module_level, "pyspark is imported at module level by {}".format(
-        sorted(at_module_level)
+    optional = optional_import_names()
+    assert optional, "no optional packages were found, so this checks nothing"
+    at_module_level = imported(module_level_only=True)
+    offenders = {}
+    for name in sorted(optional):
+        where = [
+            w
+            for w in at_module_level.get(name, set())
+            if w.startswith("featurestore" + os.sep)
+        ]
+        if where:
+            offenders[name] = sorted(where)
+    assert not offenders, "optional packages imported at module level: {}".format(offenders)
+
+
+def check_no_optional_package_is_unused():
+    """A package declared in an optional file and imported nowhere means the file is
+    describing an environment nothing needs. This is the half the check above cannot do,
+    because it iterates the packages it finds rather than requiring each to appear."""
+    used = set(imported())
+    unused = sorted(optional_import_names() - used)
+    assert not unused, "declared in an optional file and imported nowhere: {}".format(unused)
+
+
+def scripts_the_suite_imports():
+    """Scripts named inside tests/, found by reading the test sources.
+
+    `tests/test_serve_probe.py` loads `scripts/serve_probe.py` by path, so that script is
+    now part of what a clone has to be able to import with only the base file installed.
+    Nothing in `check_the_suite_itself_needs_only_the_base_file` covers it, because that
+    one walks the tests and the library and a script is neither.
+
+    Derived by matching the real script filenames against the text of the tests rather
+    than listed, so the next test that reaches for a script is covered without anybody
+    remembering to add it.
+    """
+    scripts_dir = os.path.join(ROOT, "scripts")
+    if not os.path.isdir(scripts_dir):
+        return set()
+    names = [n for n in os.listdir(scripts_dir) if n.endswith(".py")]
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    found = set()
+    for test_name in os.listdir(tests_dir):
+        if not (test_name.startswith("test_") and test_name.endswith(".py")):
+            continue
+        with open(os.path.join(tests_dir, test_name), "r", encoding="utf-8") as fh:
+            body = fh.read()
+        if "spec_from_file_location" not in body:
+            continue
+        for script in names:
+            if script in body:
+                found.add(os.path.join("scripts", script))
+    return found
+
+
+def check_a_script_the_suite_imports_needs_only_the_base_file():
+    imported_scripts = scripts_the_suite_imports()
+    assert imported_scripts, "no test imports a script, so this check has no subject"
+    optional = optional_import_names()
+    at_module_level = imported(module_level_only=True)
+    offenders = {}
+    for name in sorted(optional):
+        where = [w for w in at_module_level.get(name, set()) if w in imported_scripts]
+        if where:
+            offenders[name] = sorted(where)
+    assert not offenders, (
+        "a test imports these scripts and they name an optional package at module "
+        "level: {}".format(offenders)
     )
+
+
+def check_the_library_really_defers_something():
+    """The two checks above pass on a library that imports nothing heavy at all, which
+    would also be the state after somebody deleted the modules that do. This is the
+    positive assertion, and it names the arrangement rather than the package."""
+    deferred = set(imported()) - set(imported(module_level_only=True))
+    assert deferred, "nothing anywhere in this repo defers an import into a function"
+    assert "pyspark" in deferred, "pyspark is no longer deferred: {}".format(sorted(deferred))
+    assert "fastapi" in deferred, "fastapi is no longer deferred: {}".format(sorted(deferred))
 
 
 def check_the_scanner_found_something():

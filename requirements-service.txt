@@ -1,0 +1,23 @@
+# Only featurestore/api.py and tests/run_with_api.py need this. Install it on top of
+# requirements.txt and requirements-online.txt, because a service with no store to read
+# is not a service.
+#
+#     pip install -r requirements.txt -r requirements-online.txt -r requirements-service.txt
+#
+# featurestore/service.py imports none of this. Validation lives in that file and so does
+# what a miss means. So does what a vector's age means and so does the shape of the log
+# record. Every rule worth arguing over is therefore readable and checkable on a clone that
+# installed only the base file. This half is the HTTP edge and it makes no decisions.
+#
+# httpx is here because fastapi.testclient needs it, and the fourth runner drives the real
+# app through TestClient rather than standing up a socket. It is a test dependency that a
+# deployment does not need, and it is in this file rather than a fifth one because the
+# only thing that imports fastapi here is the same thing that needs the client.
+#
+# starlette is declared even though fastapi installs it, because api.py imports it
+# directly for run_in_threadpool. A direct import satisfied by somebody else's transitive
+# dependency is a version nobody in this repo chose, and it breaks on the release where
+# fastapi widens its own pin. tests/test_deps.py refused this file until the line existed.
+fastapi==0.121.2
+starlette==0.49.3
+httpx==0.28.1
