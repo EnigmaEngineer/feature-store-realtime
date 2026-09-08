@@ -18,6 +18,14 @@
 # directly for run_in_threadpool. A direct import satisfied by somebody else's transitive
 # dependency is a version nobody in this repo chose, and it breaks on the release where
 # fastapi widens its own pin. tests/test_deps.py refused this file until the line existed.
+#
+# uvicorn is the server named in the command at the top of featurestore/api.py, and until
+# scripts/load_probe.py nothing here had ever started one. TestClient drives the app in
+# process with no socket and no event loop of its own, so every latency figure published
+# before today was measured on a stack missing the part that does the concurrency. The
+# load probe imports uvicorn directly and tests/test_deps.py refused the build until this
+# line existed, which is the fifth time that check has caught a missing declaration.
 fastapi==0.121.2
 starlette==0.49.3
 httpx==0.28.1
+uvicorn==0.52.4

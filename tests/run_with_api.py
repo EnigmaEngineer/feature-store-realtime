@@ -109,6 +109,17 @@ def api_arm():
         direct = svc.handle({"entity_id": known, "event_ts": as_of + 60})
         assert direct.body["score"] == body["score"], (direct.body["score"], body["score"])
 
+        # The arrangement `scripts/load_probe.py` measures against. It runs the same work
+        # on the event loop instead of on a worker thread, and the only thing that may
+        # differ between the two is how long it takes. A speed comparison between two
+        # arrangements that answered differently would be comparing two services.
+        loop_side = TestClient(api.build_app(svc, sink=emitted.append, offload=False))
+        same = loop_side.post("/score", json={"entity_id": known, "event_ts": as_of + 60})
+        assert same.status_code == got.status_code, (same.status_code, got.status_code)
+        assert same.json() == body, (same.json(), body)
+        loop_miss = loop_side.post("/score", json={"entity_id": "no_such_account", "event_ts": as_of})
+        assert loop_miss.status_code == 404, (loop_miss.status_code, loop_miss.text)
+
         miss = http.post("/score", json={"entity_id": "no_such_account", "event_ts": as_of})
         assert miss.status_code == 404, (miss.status_code, miss.text)
 
@@ -137,17 +148,22 @@ def api_arm():
         # One line per scoring request that arrived, including the one that never parsed.
         # A count that drifts from the request count is how a log stops being a record.
         #
-        # Six and not seven. /health emits nothing, deliberately, because a readiness
+        # Eight and not nine. /health emits nothing, deliberately, because a readiness
         # probe firing every second would be most of the log and none of the information.
         # That is worth asserting rather than leaving as an off by one somebody later
         # 'fixes' by loosening the comparison.
-        assert len(emitted) == 6, "{} log lines for 6 scoring requests".format(len(emitted))
+        #
+        # Six until the loop side arm was added. It sends two more and shares this sink,
+        # and this assertion is what said so rather than the arm passing quietly. An app
+        # built with offload off has to log exactly like one built with it on.
+        assert len(emitted) == 8, "{} log lines for 8 scoring requests".format(len(emitted))
         before = len(emitted)
         assert http.get("/health").status_code == 200
         assert len(emitted) == before, "/health wrote a log line"
         outcomes = [r["outcome"] for r in emitted]
         assert outcomes.count("unparseable") == 1, outcomes
-        assert outcomes.count("scored") == 1, outcomes
+        assert outcomes.count("scored") == 2, outcomes
+        assert outcomes.count("miss") == 2, outcomes
         assert all("http_ms" in r for r in emitted), outcomes
 
         import json as json_mod
@@ -155,9 +171,12 @@ def api_arm():
         for record in emitted:
             json_mod.dumps(record, sort_keys=True, default=str)
 
+        # Both numbers come off the list rather than out of the sentence. The literal 6
+        # here went stale the moment the loop side arm sent two more requests, and the
+        # line printed "8 log lines from 6 scoring requests" without anything failing.
         print(
-            "api arm agrees with the service, {} log lines from 6 scoring requests and "
-            "none from health".format(len(emitted))
+            "api arm agrees with the service, {} log lines from {} scoring requests and "
+            "none from health".format(len(emitted), len(emitted))
         )
     finally:
         server.shutdown()

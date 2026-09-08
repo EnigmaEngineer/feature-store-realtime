@@ -43,12 +43,18 @@ def emit(record, stream=None):
     stream.flush()
 
 
-def build_app(svc, sink=emit):
+def build_app(svc, sink=emit, offload=True):
     """A FastAPI app over an already assembled `service.Service`.
 
     Taking the service rather than building one means the fourth runner can hand it a
     store it loaded itself, and nothing here reads an environment variable at request
     time.
+
+    `offload` decides whether the blocking work runs on a worker thread or on the event
+    loop. It exists so that `scripts/load_probe.py` can measure the arrangement this file
+    does not use, and it defaults to the one it does. The alternative was writing the
+    losing arm out by hand in the probe, which is how a comparison gets rigged without
+    anybody meaning to.
     """
     from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse
@@ -91,7 +97,14 @@ def build_app(svc, sink=emit):
         #
         # The alternative is an async Redis client, which means the store path grows an
         # async twin and `featurestore/online.py` stops being one implementation.
-        result = await run_in_threadpool(svc.handle, payload, request_id)
+        #
+        # What that costs at one request at a time, and what it buys at many, is measured
+        # by `scripts/load_probe.py` rather than argued here. Both answers are in
+        # docs/adr-0006 and neither of them is the one this comment assumed.
+        if offload:
+            result = await run_in_threadpool(svc.handle, payload, request_id)
+        else:
+            result = svc.handle(payload, request_id)
         result.log["http_ms"] = round((time.perf_counter() - started) * 1000.0, 4)
         result.log["status"] = result.status
         sink(result.log)
