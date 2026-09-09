@@ -26,7 +26,6 @@ good a proxy it is.
 
 import argparse
 import json
-import math
 import os
 import statistics
 import sys
@@ -34,7 +33,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from featurestore import api, compute, load, service
+from featurestore import api, compute, load, service, stats
 from featurestore import corpus as corpus_io
 from featurestore import model as model_mod
 from featurestore import online, spec
@@ -84,85 +83,6 @@ def truth_scores(log, feature_set, model, requests):
     return out
 
 
-def betainc(a, b, x):
-    """The regularised incomplete beta function, by continued fraction.
-
-    Here rather than a direct binomial sum because the direct sum underflows. The first
-    version of this summed the binomial tail term by term starting from (1-p)**n, which
-    is zero in a double for n of 48,998, so every evaluation returned 0 and the interval
-    came back as 1.0000 to 1.0000 on every row with a large denominator. It printed a
-    plausible number on the small rows, which is why it survived a first look.
-
-    Lentz's method on the standard continued fraction. scipy has this and scipy is a
-    scikit-learn dependency rather than one this repo declares, and the serving path does
-    not get to import a maths library for a number that appears in a probe.
-    """
-    if x <= 0.0:
-        return 0.0
-    if x >= 1.0:
-        return 1.0
-    front = math.exp(
-        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
-        + a * math.log(x) + b * math.log(1.0 - x)
-    )
-    if x > (a + 1.0) / (a + b + 2.0):
-        return 1.0 - betainc(b, a, 1.0 - x)
-
-    tiny = 1e-30
-    f, c, d = 1.0, 1.0, 0.0
-    for i in range(0, 300):
-        m = i // 2
-        if i == 0:
-            numerator = 1.0
-        elif i % 2 == 0:
-            numerator = (m * (b - m) * x) / ((a + 2.0 * m - 1.0) * (a + 2.0 * m))
-        else:
-            numerator = -((a + m) * (a + b + m) * x) / ((a + 2.0 * m) * (a + 2.0 * m + 1.0))
-        d = 1.0 + numerator * d
-        if abs(d) < tiny:
-            d = tiny
-        d = 1.0 / d
-        c = 1.0 + numerator / c
-        if abs(c) < tiny:
-            c = tiny
-        step = c * d
-        f *= step
-        if abs(1.0 - step) < 1e-14:
-            return front * (f - 1.0) / a
-    # Silently returning an unconverged value is how a numeric routine ships a wrong
-    # number that looks like a right one. This one already did that once, in a different
-    # way, and the interval it feeds is printed in a table.
-    raise ArithmeticError(
-        "the incomplete beta did not converge at a={}, b={}, x={}".format(a, b, x)
-    )
-
-
-def beta_quantile(p, a, b):
-    lo, hi = 0.0, 1.0
-    for _ in range(200):
-        mid = (lo + hi) / 2.0
-        if betainc(a, b, mid) < p:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2.0
-
-
-def binomial_interval(k, n, level=0.95):
-    """Clopper Pearson, through the beta quantile it is exactly equal to.
-
-    A threshold that serves forty requests reports a rate whose third decimal is noise,
-    and printing 0.0370 beside 0.0785 invites a reader to treat the gap as settled. The
-    interval is what the count licenses and nothing more.
-    """
-    if n == 0:
-        return 0.0, 1.0
-    alpha = 1.0 - level
-    low = 0.0 if k == 0 else beta_quantile(alpha / 2.0, k, n - k + 1)
-    high = 1.0 if k == n else beta_quantile(1.0 - alpha / 2.0, k + 1, n - k)
-    return low, high
-
-
 def sweep(served, wanted, ages, threshold, flip_at):
     """One row of the table. What it refuses, what it serves, and how wrong each half is.
 
@@ -189,7 +109,7 @@ def sweep(served, wanted, ages, threshold, flip_at):
         flips += 1 if flipped else 0
     total = len(served)
     kept = total - refused
-    low, high = binomial_interval(flips, kept)
+    low, high = stats.binomial_interval(flips, kept)
     return {
         "threshold": threshold,
         "label": label_for(threshold),
@@ -370,7 +290,7 @@ def main(argv=None):
             ("nothing arrived since the load", quiet_total, quiet_flips),
             ("something arrived since the load", busy_total, busy_flips),
         ):
-            low, high = binomial_interval(flip, tot)
+            low, high = stats.binomial_interval(flip, tot)
             print("{:<34} {:>9} {:>7} {:>7.4f} {:>18}".format(
                 name, tot, flip, flip / tot if tot else 0.0, "{:.4f} to {:.4f}".format(low, high)))
         # Why the quiet side is not zero. A trailing window sheds rows off its back edge
