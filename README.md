@@ -60,6 +60,12 @@ because this machine has all of them installed and would never notice it breakin
         |                              |                               allowed to claim
         |                              +--> scripts/serve_probe.py  grades what it serves
         |
+        +--> featurestore/drift.py      has a distribution moved, and what a
+        |          |                    threshold on that is worth
+        |          |
+        |          +--> scripts/drift_probe.py   fits, then judges windows the
+        |                                        fit never saw
+        |
         +--> payload schema             what a request must carry
                   ^
                   |
@@ -581,13 +587,165 @@ only number here under any pressure, and the cache is worth 1.24x of throughput 
 the arrangement question is worth 2.38x of p99. The smaller lever, on the axis that is not
 binding, bought with an error already measured.
 
+### A drift threshold is a statement about how much traffic arrived
+
+Rebuild every figure in this section with:
+
+```
+python scripts/drift_probe.py --json /tmp/drift.json
+```
+
+The statistic is the population stability index over bins fitted on a reference window. It
+is here because it is what everybody uses, and the two thresholds everybody uses with it,
+0.1 and 0.25, turned out to be the thing worth measuring rather than the thing to copy.
+
+Two samples from one distribution do not give zero. The expected value under no drift at
+all is `(k - 1) / n`, so the index a clean window returns depends on the bin count and on
+how many rows arrived. Measured at a window of 200 rows, against that closed form:
+
+```
+feature                 bins   distinct  null mean  predicted   null q95
+txn_count_1h               2         17     0.0055     0.0050     0.0193
+txn_count_24h              7         36     0.0292     0.0300     0.0621
+amount_sum_1h              2      12880     0.0053     0.0050     0.0222
+amount_max_24h             9      14836     0.0424     0.0400     0.0885
+amount_mean_7d            10     251382     0.0452     0.0450     0.0828
+distinct_merchants_1h      2         16     0.0047     0.0050     0.0161
+distinct_merchants_7d      7         30     0.0298     0.0300     0.0579
+```
+
+Ten bins were asked for and `txn_count_1h` got two, because it is a small integer where
+most rows hold zero and quantile edges collapse onto each other. Since the null scales with
+the bin count, a threshold set once for a project and a threshold set per feature are
+different numbers.
+
+The same null at a range of window sizes. Nothing has drifted in any of these:
+
+```
+feature                      50      100      200      500     1000     2000
+txn_count_1h             0.0889   0.0345   0.0193   0.0090   0.0031   0.0018
+txn_count_24h            0.3064   0.1335   0.0704   0.0242   0.0121   0.0066
+amount_sum_1h            0.0589   0.0374   0.0222   0.0089   0.0033   0.0018
+amount_max_24h           0.3127   0.1628   0.0778   0.0309   0.0157   0.0079
+amount_mean_7d           0.3739   0.1937   0.0858   0.0339   0.0171   0.0085
+distinct_merchants_1h    0.0838   0.0345   0.0193   0.0069   0.0044   0.0021
+distinct_merchants_7d    0.2839   0.1391   0.0658   0.0254   0.0131   0.0059
+```
+
+Five of seven sit above 0.10 at fifty rows with nothing wrong, and every one is under 0.01
+at two thousand. The same threshold is deafening or deaf depending only on traffic.
+
+The closed form was wrong when it was first written, at `(k - 1) / (2n)`. That is the
+standard result for a one directional divergence and this index is the divergence in both
+directions added together, so the answer is twice it. Nothing in the code says which one it
+is. The measured column coming back at almost exactly double the predicted one on all seven
+features is what said so, and a multinomial with a known bin count then agreed with
+`(k - 1) / n` at five values of `k` and two of `n`.
+
+### The threshold is calibrated correctly and the assumption under it is not
+
+A threshold at the 95th percentile of that null should fire on about five percent of clean
+windows. Over 979 held out consecutive windows the fit never saw, and over the same rows
+shuffled before splitting:
+
+```
+feature                 threshold     in order     shuffled      ratio
+txn_count_1h               0.0227       0.2727       0.0398       6.8x
+txn_count_24h              0.0664       0.0582       0.0470       1.2x
+amount_sum_1h              0.0190       0.2084       0.0572       3.6x
+amount_max_24h             0.0783       0.0409       0.0531       0.8x
+amount_mean_7d             0.0924       0.1399       0.0368       3.8x
+distinct_merchants_1h      0.0227       0.2962       0.0398       7.4x
+distinct_merchants_7d      0.0693       0.5832       0.0255      22.8x
+```
+
+Shuffling the whole table before splitting makes the reference and every window the same
+distribution by construction, so the only difference between those two columns is time
+order. On the shuffle the threshold fires at 0.0255 to 0.0572, which is the five percent it
+was built for. In time order, on the same rows, it reaches 0.5832.
+
+The in order column is not a false positive rate and it is not described as one. Those
+windows are later traffic and nothing establishes that later traffic is free of real drift.
+It is the rate at which a monitor would page somebody, which is the number that decides
+whether to build the pager.
+
+**Nothing here pages.** A guardrail firing on between a twentieth and a half of all windows
+gets switched off, and then it protects nothing. The named fix is a null that keeps time
+structure, which is a moving block resample over consecutive runs rather than independent
+draws. `docs/adr-0007` has the argument.
+
+### The distribution monitor is blind to the failure this project has
+
+Served against offline over the same 195,989 requests, so the request weighting is on both
+sides and cancels:
+
+```
+feature                     index over 0.10 over 0.25  cells wrong      share
+txn_count_1h               0.0012        no        no        54526     0.2782
+txn_count_24h              0.0030        no        no       157299     0.8026
+amount_sum_1h              0.0002        no        no        60900     0.3107
+amount_max_24h             0.0022        no        no       185106     0.9445
+amount_mean_7d             0.0034        no        no       193926     0.9895
+distinct_merchants_1h      0.0012        no        no        53882     0.2749
+distinct_merchants_7d      0.0005        no        no        63850     0.3258
+```
+
+769,489 of 1,371,923 cells are wrong. That is 0.5609. And 16,357 of 195,989 requests get
+the opposite decision from the served vector to the one the offline answer calls for, a
+rate of 0.0835. The largest index any feature reaches is 0.0034 against a rule of thumb of 0.10.
+
+`amount_mean_7d` is the clearest case, wrong on 98.95 percent of requests at an index of
+0.0034. Checked directly rather than inferred, the served column has a mean of 32.8343
+against 32.8599 offline, with standard deviations of 18.8082 and 19.2903.
+
+Staleness is a per row error and not a distributional one. A stale seven day mean is a
+perfectly ordinary seven day mean attached to the wrong request. So a distribution monitor
+cannot be the skew detector for a feature store. `scripts/staleness_probe.py` is the
+comparison with the signal in it, and this one is for catching a change in the feed.
+
+### A store that is exactly right reads as significant drift
+
+Measured at the load moment, where the store agrees with the reference on all 28,000 cells:
+
+```
+feature                     index     null q95 over 0.10 over 0.25
+txn_count_1h               0.0490     0.000030        no        no
+txn_count_24h              0.3096     0.000043       yes       yes
+amount_sum_1h              0.0458     0.000022        no        no
+amount_max_24h             0.1466     0.000112       yes        no
+amount_mean_7d             0.0092     0.000081        no        no
+distinct_merchants_1h      0.0490     0.000028        no        no
+distinct_merchants_7d      0.1837     0.000096       yes        no
+```
+
+The store holds one row per entity and traffic reads a busy account far more often than a
+quiet one, so the same store has two distributions depending on whether entities or
+requests are counted. `txn_count_24h` reads 0.3096, above the rule of thumb for significant
+drift, at a moment when staleness is exactly zero. Profile on the population the monitor is
+going to judge.
+
+### An emptied bin is a verdict rather than a number
+
+A bin the window emptied needs the logarithm of zero. The usual fix substitutes a small
+share. One real held out window, priced four ways:
+
+```
+feature                excluded       0.001      0.0001       1e-06
+amount_sum_1h            0.0105      0.4666      0.7008      1.1621
+```
+
+A factor of 111 across a constant the data has no opinion about. So an emptied bin is
+counted and reported as `bin_emptied`, which fires whatever the index is, because a
+category disappearing is a different event from a distance growing.
+
 ## Verification
 
 ```
-python tests/run_all.py                          206 passed, 0 failed
-python tests/run_with_spark.py                   206 passed, 0 failed, spark arm agrees
-python tests/run_with_redis.py                   206 passed, 0 failed, store arm agrees
-python tests/run_with_api.py                     206 passed, 0 failed, api arm agrees
+python tests/run_all.py                          248 passed, 0 failed
+python tests/run_with_spark.py                   248 passed, 0 failed, spark arm agrees
+python tests/run_with_redis.py                   248 passed, 0 failed, store arm agrees
+python tests/run_with_api.py                     248 passed, 0 failed, api arm agrees
+python scripts/drift_probe.py                    exit 0, load moment control clean
 ```
 
 Four runners because three of them reach something the first cannot. `tests/run_all.py`
@@ -634,9 +792,58 @@ featurestore/model.py      18 of 20 run_all.py
 featurestore/generate.py   60 of 63 run_all.py
 featurestore/frames.py     17 of 30 run_all.py
 featurestore/load.py       53 of 67 run_all.py
+featurestore/drift.py      79 of 79 run_all.py
+featurestore/stats.py      86 of 92 run_all.py
 featurestore/spark_job.py  11 of 29 run_all.py
 featurestore/spark_job.py  24 of 29 run_with_spark.py
 ```
+
+Four of the seventy nine on `drift.py` were killed by not terminating rather than by a
+failing assertion, and all four are in `bin_index`, which is a hand written binary search.
+Widening its loop condition, negating the midpoint, or stepping the lower bound backwards
+each produce a loop with no exit. The harness reports nothing at all in that case, because
+its own subprocess timeout is longer than the call it runs inside, so the evidence a pass
+happened is a mutant left in the copy. They are counted as killed. A mutant that hangs the
+suite forever is one the suite noticed.
+
+The pass over `drift.py` started at fourteen survivors across the file and reached zero.
+None of them was an equivalent mutant and none needed the module changing. Every one was a
+fixture that agreed with the mutation by accident, and three are worth reading.
+
+Replacing `log(c / r)` with `log(c * r)`, which is the centre of the statistic, survived
+everything. The two forms differ by `sum((c - r) * 2 * log(r))`, and when every reference
+share is the same number that pulls out of the sum and leaves it multiplied by
+`sum(c - r)`, which is zero because both sides are shares. Quantile binning makes the
+reference shares equal by construction, so every fixture built from continuous data made
+that mutant exactly equivalent. It dies on ninety zeros and ten ones, where the shares are
+0.9 and 0.1 and the index is 0.8788898310 forwards and the negative of it backwards.
+
+Two more were tie handling, and both fixtures had put their ties on the smallest value,
+where the final filter removes the duplicates anyway. A repeated value in the middle is
+where accepting an equal edge really produces eight bins nothing can fall into, and a
+unique smallest value is where comparing against the second smallest turns a feature
+holding two values into a constant.
+
+The floor on a judged window was written as `MIN_WINDOW - 1`, so it moved with the constant
+it was supposed to pin, and a mutant shifting that constant survived. Literal sizes on both
+sides of the boundary now.
+
+`stats.py` moved out of `scripts/serve_probe.py` this pass, because the drift thresholds
+need the same exact interval and two Clopper Pearson implementations in one repo is the
+shape where each half is right on its own. Its one real survivor was the `n == 0` guard on
+`binomial_interval`, and it survived because the only case anything asserted was zero
+successes in zero trials, which returns the same pair whether the guard fires or not. One
+trial separates them.
+
+The remaining six are floating point. Two are iteration caps. One is 300 on the continued
+fraction, where the most any tested input uses is 29. The other is 200 on a bisection over
+the unit interval, which is already past what a double can represent after about 52. Three
+are comparisons against a tolerance that differ only when a value lands exactly on it.
+
+The last one is the bisection's own `<` against `<=` and it is not equivalent. It moves the
+answer by one unit in the last place on two of the eight published inputs and by nothing on
+the other six. That unit is 2.22e-16. Pinning it would mean asserting a bit that carries no
+information.
 
 The pass over `load.py` started at 47 of 67 and moved to 53 by fixing what it named. Two of
 those were the module rather than the checks. A clamp on the quantile index could never
@@ -753,6 +960,23 @@ And the default arguments. Every check passes explicit values to stay fast, so t
 the horizon that build the published corpus were the one thing in the file nothing touched.
 
 ## Known limitations
+
+The drift monitor's null assumes a window is an independent draw from the reference, and a
+window of real traffic is not one. The measured cost of that assumption is in the shuffled
+control above, where the same threshold on the same rows fires at 0.0255 to 0.0572 without
+time order and at up to 0.5832 with it. So the threshold is right for a model of traffic
+this traffic does not follow, which is why nothing is wired to a pager. The fix is a
+resample that keeps time structure and it is not built.
+
+There is no injection harness for drift. Nothing in this repo takes a clean window, damages
+it in a named way, and checks that the monitor notices. Every rate reported above is a rate
+on data nobody deliberately broke, so the monitor's sensitivity is unmeasured and only its
+noise is measured. Half a control is worth less than it looks, and this is the half that is
+missing.
+
+The reference profile is fitted once and never refitted, exactly as the online store is
+loaded once and never refreshed. A monitor whose reference is three months stale reports
+the age of its own profile.
 
 A calendar aligned window has no batch implementation. A Spark RANGE frame is two
 constants and that alignment is not a constant offset from the scoring event, so
