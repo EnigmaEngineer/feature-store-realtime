@@ -11,7 +11,7 @@ round trip. The argument was never measured, because every latency figure this r
 came off `fastapi.testclient`, which sends one request at a time and never opens a socket.
 A serial harness cannot tell the two arrangements apart.
 
-The second question is the day's blueprint line. Caching where it earns its place. What
+The second question is whether a cache earns its place here. What
 that needs is a ceiling on what a cache could buy, not a cache.
 
 `scripts/load_probe.py` answers both. Four arms, all built by `api.build_app`, driven by a
@@ -62,7 +62,8 @@ which is the property a network wait has.
 | 2.0 ms |  902 |  354 | 2.55x | 6 of 6 | 0.0312 |
 
 At 32 clients. The crossover sits between 0.2 and 0.5 ms, with 0.3 and 0.4 undecided at
-six rounds. Day 3 measured this store answering `HGETALL` in about 0.12 ms and the lookup
+six rounds. The store round trip check measures this store answering `HGETALL` in about
+0.12 ms and the lookup
 p99 at about 0.29 ms, so the deployment being measured sits on the crossover rather than
 comfortably to one side of it.
 
