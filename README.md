@@ -418,6 +418,36 @@ decimal. The budget for this project is 150 ms. The store alone was measured at 
 costs and the whole thing is still about fifty times inside budget. This is a single
 process on loopback with no network, so it is a floor and not a serving number.
 
+### Running the service, and the four things it reads from the environment
+
+`featurestore/api.py` exposes a factory rather than a module level app, so importing the
+module does not try to reach Redis.
+
+```
+uvicorn --factory featurestore.api:app
+```
+
+`from_environment` assembles the service the way a container would. It raises rather than
+degrading. A process with no model, or with a model fitted on a different spec, would
+answer requests with numbers nobody can account for.
+
+| variable | default | what it decides |
+|---|---|---|
+| `FS_SPEC` | `specs/txn_fraud.yml` | the feature set and therefore the online keyspace |
+| `FS_MODEL` | `models/txn_fraud.json` | the coefficients |
+| `FS_REDIS_URL` | `redis://127.0.0.1:6379/0` | where the online store is |
+| `FS_MAX_AGE_S` | unset | the staleness refusal in `service.Policy` |
+
+`FS_MAX_AGE_S` is the one to read twice. Unset is the shipped default and it means a vector
+of any age is served with its age attached. That is a decision rather than an omission and
+the section below is the argument for it.
+
+The Redis default is port 6379 because that is what a real Redis listens on. Every
+`redislite` server started inside this repo uses a different port, so a local bring-up needs
+`FS_REDIS_URL` pointed at whichever one is running. `scripts/store_check.py` is 6399 and
+`tests/run_with_api.py` is 6403. `scripts/serve_probe.py` defaults to 6404 and
+`scripts/load_probe.py` defaults to 6405.
+
 ### An age threshold refuses far more than it saves
 
 A decision flip is a request where the stored vector and its own point in time vector land
@@ -596,8 +626,9 @@ python scripts/drift_probe.py --json /tmp/drift.json
 ```
 
 The statistic is the population stability index over bins fitted on a reference window. It
-is here because it is what everybody uses, and the two thresholds everybody uses with it,
-0.1 and 0.25, turned out to be the thing worth measuring rather than the thing to copy.
+is here because it is what everybody uses. The two thresholds everybody uses with it are
+0.1 and 0.25, and those turned out to be the thing worth measuring rather than the thing to
+copy.
 
 Two samples from one distribution do not give zero. The expected value under no drift at
 all is `(k - 1) / n`, so the index a clean window returns depends on the bin count and on
@@ -977,6 +1008,14 @@ missing.
 The reference profile is fitted once and never refitted, exactly as the online store is
 loaded once and never refreshed. A monitor whose reference is three months stale reports
 the age of its own profile.
+
+Nothing stores a fitted profile, which hides a second gap behind the first. Profiles are
+fitted at the top of a run and read back inside the same run, off the same list of feature
+names, so a feature can never arrive without one. The day they are persisted that stops
+being true. A spec that gains a feature after the profiles were written has no reference to
+judge it against, and the honest answer then is a verdict saying so rather than a monitor
+that silently judges whichever features it happens to hold. There is no such verdict here,
+deliberately, because a constant nothing can assign reads like a handled path.
 
 A calendar aligned window has no batch implementation. A Spark RANGE frame is two
 constants and that alignment is not a constant offset from the scoring event, so
