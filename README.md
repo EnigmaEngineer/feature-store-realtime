@@ -411,12 +411,23 @@ python scripts/serve_probe.py --accounts 0
   the edge is 5.1x the service on the p99
 ```
 
-Four runs put the p99 through the app between 2.362 and 3.368 ms and the service half
-between 0.467 and 0.623, so the ratio ran 4.9 to 5.5 and none of these is worth a third
-decimal. The budget for this project is 150 ms. The store alone was measured at a p99 of
-0.286 ms with no HTTP in it, so the framework and the socket are most of what a request
-costs and the whole thing is still about fifty times inside budget. This is a single
-process on loopback with no network, so it is a floor and not a serving number.
+None of those is worth a third decimal, and the range around them is wider than one
+session can tell you. Four runs in one session put the p99 through the app between 2.362
+and 3.368 ms, the service half between 0.467 and 0.623, and the ratio at 4.9 to 5.5. Four
+more runs on a different day gave 2.377 to 2.455 through the app and 0.374 to 0.387 inside
+the service, for a ratio of 6.2 to 6.4. Same machine and same corpus.
+
+The app half landed inside its earlier range and the service half did not, so the ratio
+did not either. Read that as the shape rather than as a number. The edge costs several
+times what the decision logic does, and any tighter claim is a claim about a session.
+
+The `max` column is the least stable thing in the block. It is one request out of 3000 and
+it has read 3.564 ms on one day and about 53 ms on another.
+
+The budget for this project is 150 ms. The store alone was measured at a p99 of 0.286 ms
+with no HTTP in it, so the framework and the socket are most of what a request costs and
+the whole thing is still well inside budget. This is a single process on loopback with no
+network, so it is a floor and not a serving number.
 
 ### Running the service, and the four things it reads from the environment
 
