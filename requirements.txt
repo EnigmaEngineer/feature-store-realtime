@@ -5,6 +5,8 @@
 # next to the field it explains, and a spec is a document people argue over in review.
 PyYAML==6.0.3
 
-# scikit-learn is deliberately NOT here. Only scripts/leakage_probe.py imports it and no
-# check does, so putting it in this file would make a clone install a numpy and a scipy
-# it does not need to run anything. requirements-model.txt has it.
+# scikit-learn is deliberately NOT here. Two scripts import it and no check does.
+# scripts/train_model.py fits the model and writes models/txn_fraud.json.
+# scripts/leakage_probe.py measures the account level ceiling. Putting scikit-learn in this
+# file would make a clone install a numpy and a scipy it does not need to run anything.
+# requirements-model.txt has it.
