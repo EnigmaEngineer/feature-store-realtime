@@ -59,11 +59,17 @@ MOVED = "moved"
 BIN_EMPTIED = "bin_emptied"
 CONSTANT_MOVED = "constant_moved"
 
-# Not drift. These say the monitor could not judge, which is a fact about the fit or about
-# the window and gets reported once rather than raised as an alert every window. That is
-# the answer this repo arrived at after a monitor emitted two alerts per partition
+# Not drift. This says the monitor could not judge, which is a fact about the window rather
+# than about the data, and it gets reported once rather than raised as an alert every
+# window. That is the answer I arrived at after a monitor emitted two alerts per partition
 # forever, each one restating that the same signal could not be banded.
-UNPROFILED = "unprofiled"
+#
+# There is deliberately no verdict for a feature the reference profile does not contain.
+# A `Monitor` is built around one profile, so `judge` cannot meet a feature it has no
+# profile for, and the layer above fits every profile from the same name list it reads back.
+# The case only becomes reachable once profiles are persisted between runs, which nothing
+# here does. A constant sitting unassigned until then would read as a handled path, so the
+# gap is named in the README limitations instead.
 TOO_FEW = "too_few"
 
 DRIFT_VERDICTS = (MOVED, BIN_EMPTIED, CONSTANT_MOVED)
@@ -359,7 +365,7 @@ def fire_rate(monitor, windows):
     that it has cost three separate days of work elsewhere.
     """
     judged = [monitor.judge(w) for w in windows]
-    scored = [v for v in judged if v["verdict"] not in (TOO_FEW, UNPROFILED)]
+    scored = [v for v in judged if v["verdict"] != TOO_FEW]
     fires = sum(1 for v in scored if fired(v))
     return {
         "feature": monitor.profile.name,
