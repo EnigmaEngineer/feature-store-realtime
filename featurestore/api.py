@@ -12,10 +12,10 @@ fastapi is imported inside `build_app` rather than at the top, for the same reas
 `tests/test_deps.py` asserts that arrangement rather than trusting it, because this
 machine has fastapi installed and would never notice it breaking.
 
-The request model is deliberately permissive at the pydantic layer. If FastAPI rejected a
-bad body before `service.validate` saw it then the validation rules would have two
-implementations, one of which is untested and returns a different shape. There is one
-implementation and pydantic is not it.
+There is no pydantic request model, deliberately. The handler takes a raw `Request` and
+passes the body to `service.validate`. If FastAPI rejected a bad body before that saw it
+then the validation rules would have two implementations, one of which is untested and
+returns a different shape. One implementation is the point and pydantic is not it.
 """
 
 import json

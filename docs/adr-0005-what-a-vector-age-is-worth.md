@@ -124,6 +124,11 @@ the larger half of this and not all of it.
 The service attaches the age to every scored response and does not judge it by default.
 `max_age_s` exists, it is honoured, and it ships as None.
 
+An operator sets it with `FS_MAX_AGE_S`, in seconds, which `featurestore/api.py` reads in
+`from_environment` and passes to `Policy`. A value of zero or below is refused at start
+rather than treated as off. Leaving the variable unset is the shipped position and the
+table above is why.
+
 That is a decision and not a refusal to make one. A threshold here is a guardrail whose
 subject is a store with no refresh loop, so any setting short enough to protect the seven
 day mean refuses essentially all traffic, and a guardrail that refuses everything correct
