@@ -175,7 +175,7 @@ def warm(port, bodies, calls):
 
     The first request through a fresh process pays for the route table, the encoder and,
     on the offload arm, for creating a worker thread. Charging that to whichever arm ran
-    first is a mistake this program has made three times.
+    first is a mistake I have made three times.
     """
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     for i in range(calls):

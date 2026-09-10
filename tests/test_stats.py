@@ -51,8 +51,8 @@ def check_the_interval_matches_an_independent_implementation():
         beta.ppf(0.975, 3849, 45150)
 
     A fixture exists to be the thing that cannot be argued with, so these are computed
-    rather than remembered. Two vectors in another repo here were once written from
-    memory and were wrong, with correct ones beside them hiding it.
+    rather than remembered. I once wrote two hash vectors into a fixture from memory and
+    both were wrong, with three correct ones beside them hiding it.
     """
     for k, n, low, high in REFERENCE:
         got_low, got_high = stats.binomial_interval(k, n)

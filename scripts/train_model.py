@@ -8,8 +8,8 @@ and a logistic regression. The artefact is JSON and the serving path reads it wi
 
 The part of this worth having is the last check. scikit-learn scores a row through numpy
 and the service scores the same row through `math.exp` in `featurestore/model.py`. Those
-are two implementations of one function, and this program has been bitten more than once
-by two implementations that were each correct and disagreed. So the fit is not written out
+are two implementations of one function, and I have been bitten more than once by two
+implementations that were each correct and disagreed. So the fit is not written out
 until every training row has been pushed through both and the largest gap between them
 reported.
 

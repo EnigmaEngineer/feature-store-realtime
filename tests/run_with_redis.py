@@ -10,7 +10,8 @@ and it cannot say whether a value survives a real server.
 This runs the suite and then `scripts/store_check.py`. That script starts a Redis in this
 process and loads the store. It then reads every row back and compares it cell by cell
 against the reference. A mutation harness that takes a runner and reads its exit code can
-be pointed here instead:
+be pointed here instead. Mine is a small script I keep outside this repo, so substitute
+your own for `mutate.py` below.
 
     cp -r <repo> /tmp/mut/fsr
     cp /tmp/mut/fsr/tests/run_with_redis.py /tmp/mut/fsr/tests/run_all.py

@@ -17,7 +17,8 @@ whose second half quietly disappears reports the suite's number and reads exactl
 full pass.
 
 The corpus slice is small on purpose. This runs the whole loader per invocation and a
-mutation harness pointed here pays that once per mutant:
+mutation harness pointed here pays that once per mutant. Mine is a small script I keep
+outside this repo, so substitute your own for `mutate.py` below.
 
     cp -r <repo> /tmp/mut/fsr
     cp /tmp/mut/fsr/tests/run_with_api.py /tmp/mut/fsr/tests/run_all.py

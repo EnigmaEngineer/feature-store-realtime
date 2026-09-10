@@ -197,7 +197,7 @@ def main(argv=None):
         # Latency through the whole edge, against the store floor measured without one.
         # A warmup pass is discarded because the first request through this stack pays for
         # the route table and the encoder, and charging that to whichever arm ran first is
-        # a mistake this program has made three times.
+        # a mistake I have made three times.
         warm = requests[0]
         for _ in range(50):
             http.post("/score", json={"entity_id": warm[entity], "event_ts": warm[time_field]})

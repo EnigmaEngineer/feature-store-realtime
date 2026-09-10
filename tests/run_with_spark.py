@@ -10,7 +10,8 @@ module is ungraded by the suite that grades everything else.
 This is the second oracle. It runs the suite and then `scripts/oracle_check.py --ties`,
 which builds the training table with a real session and compares every cell against
 `featurestore/compute.py`. Exit code is nonzero if either half fails, so a mutation
-harness that takes a runner and reads its exit code can be pointed here instead:
+harness that takes a runner and reads its exit code can be pointed here instead. Mine is a
+small script I keep outside this repo, so substitute your own for `mutate.py` below.
 
     cp -r <repo> /tmp/mut/fsr
     cp /tmp/mut/fsr/tests/run_with_spark.py /tmp/mut/fsr/tests/run_all.py
